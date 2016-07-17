@@ -1,0 +1,20 @@
+{
+  "manifest_version": 2,
+  "name": "WatCal",
+  "version": "1",
+  "description": "Allows you to export your University of Waterloo class schedule to your calendar.",
+  "icons": {
+    "128": "icon.png"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://quest.pecs.uwaterloo.ca/*"],
+      "all_frames": true,
+      "js": [
+        "jquery-2.2.4.min.js",
+        "moment-with-locales.min.js",
+        "main.js"
+      ]
+    }
+  ]
+}
