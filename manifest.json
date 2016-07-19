@@ -13,6 +13,7 @@
       "js": [
         "jquery-2.2.4.min.js",
         "moment-with-locales.min.js",
+        "EventEmitter.min.js",
         "main.js"
       ]
     }

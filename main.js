@@ -2,86 +2,246 @@
 * WatCal
 * Jay Ching Lim
 */
+'use strict';
 
-function getDateString(date) {
-  var month = date.getMonth() + 1;
-  if (month < 10) {
-    month = '0' + month;
-  }
-  var day = date.getDate();
-  if (day < 10) {
-    day = '0' + day;
-  }
-  return '' + date.getFullYear() + month + day;
-}
+var OpenDataAPI = (function() {
+  var API_KEY = '0344dcbf63c56d35fbac1ffd60ecf116';
+  var API_BASE_URL = 'https://api.uwaterloo.ca/v2';
+  var cache = {};
 
-function getTimeString(time) {
-  var timeString = time;
-  if (time.match(/[AP]M/)) {
-    var timeString = time.substr(0, time.length - 2);
-  }
-  var parts = timeString.split(':');
-  if (parts[0].length !== 2) {
-    parts[0] = '0' + parts[0];
-  }
-  timeString = parts.join('') + '00';
-  if (time.match(/PM/) && parts[0] < 12) {
-    timeString = (parseInt(timeString, 10) + 120000).toString();
-  }
-  return timeString;
-}
+  // GET /terms/list.{format}
+  var getTermsListings = function(callback) {
+    var endpoint = API_BASE_URL + '/terms/list.json';
+    if (cache[endpoint] !== undefined) {
+      callback(cache[endpoint]);
+      return;
+    }
 
-function toHHMM(time) {
-  var sec_num = parseInt(time, 10); // don't forget the second param
-  var hours   = Math.floor(sec_num / 3600);
-  var minutes = Math.floor((sec_num - (hours * 3600)) / 60);
+    $.getJSON(endpoint, { key: API_KEY }).done(function(response) {
+      if (response.meta.status != 200) { // request unsuccessful
+        console.log('[WatCal] Error: ' + response.meta.status.message);
+        return;
+      }
+      cache[endpoint] = response;
+      callback(response);
+    });
+  };
 
-  if (hours   < 10) {hours   = "0"+hours;}
-  if (minutes < 10) {minutes = "0"+minutes;}
-  return hours+':'+minutes;
-}
+  // GET /terms/{term}/{subject}/{catalog_number}/schedule.{format}
+  var getCourseScheduleByTerm = function(term, subject, catalog_number, callback) {
+    var endpoint = API_BASE_URL + '/terms/' + term + '/' + subject + '/' + catalog_number + '/schedule.json';
+    if (cache[endpoint] !== undefined) {
+      callback(cache[endpoint]);
+      return;
+    }
 
-function getDateTimeString(date, time) {
-  return getDateString(date) + 'T' + getTimeString(time);
-}
+    $.getJSON(endpoint, { key: API_KEY }).done(function(response) {
+      if (response.meta.status != 200) { // request unsuccessful
+        console.log('[WatCal] Error: ' + response.meta.status.message);
+        return;
+      }
+      cache[endpoint] = response;
+      callback(response);
+    });
+  };
 
-function getDaysOfWeek(daysOfWeekArray) {
-  var formattedDays = [];
+  // revealing module pattern
+  return {
+    getTermsListings: getTermsListings,
+    getCourseScheduleByTerm: getCourseScheduleByTerm
+  };
+}());
 
-  for (var d = 0; d < daysOfWeekArray.length; d++) {
-    if (daysOfWeekArray[d] == 'Su') {
-      formattedDays.push('SU');
-    }
-    if (daysOfWeekArray[d] == 'M') {
-      formattedDays.push('MO');
-    }
-    if (daysOfWeekArray[d] == 'T') {
-      formattedDays.push('TU');
-    }
-    if (daysOfWeekArray[d] == 'W') {
-      formattedDays.push('WE');
-    }
-    if (daysOfWeekArray[d] == 'Th') {
-      formattedDays.push('TH');
-    }
-    if (daysOfWeekArray[d] == 'F') {
-      formattedDays.push('FR');
-    }
-    if (daysOfWeekArray[d] == 'S') {
-      formattedDays.push('SA');
-    }
+var Calendar = (function() {
+  var event = new EventEmitter();
+  var content = '';
+  var sections_count = undefined;
+  var current_count = 0;
+    var timezone = 'America/Toronto';
+
+  var resetLinks = function() {
+    $('#DSCHEDULE a').unbind('click');
+    $('#DSCHEDULE').remove();
+    $('#WAIT_win0').css({ 'visibility': 'hidden', 'display': 'none' });
   }
 
-  return formattedDays.join(',');
-}
+  event.on('error', function(message) {
+    resetLinks();
+    $('#UW_DERIVED_CEM2_DESCR_X2').append('<div id="DSCHEDULE"> <a href="#" style="color:red">(Invalid Schedule)</a>)</div>');
+    $('#DSCHEDULE a').click(function(e) {
+      e.preventDefault();
+      alert('Unable to create a schedule. ' + message);
+    });
+  });
 
-function wrapICalContent(iCalContent) {
-  return 'BEGIN:VCALENDAR\r\n' +
-    'VERSION:2.0\r\n' +
-    'PRODID:-//Jay Ching Lim/WatCal//EN\r\n' +
-    iCalContent +
-    'END:VCALENDAR\r\n';
-}
+  event.on('count_section', function() {
+    current_count++;
+    if (current_count == sections_count) { // everything is loaded, display download link
+      resetLinks();
+      var studentName = $('#DERIVED_SSTSNAV_PERSON_NAME').text().toLowerCase();
+      studentName = studentName.replace(/\ /g, '-');  // Replace spaces with dashes
+      var fileName = studentName + '-uw-class-schedule.ics';
+
+      $('#UW_DERIVED_CEM2_DESCR_X2').append(
+        ' <a href="data:text/calendar;charset=UTF-8,' + encodeURIComponent(_getContent()) + '" download="' + fileName + '" style="color:#ab5b1a">(Download Schedule)</a>'
+      );
+    }
+  });
+
+  var init = function(count) {
+    sections_count = count;
+    if (sections_count == 0) {
+      event.trigger('error', ['No sections found.']);
+    }
+  };
+
+  var _getDaysOfWeek = function(days) {
+    days = days.replace(/([A-Z])/g, ' $1').substring(1).split(' ');
+
+    var formattedDays = [];
+
+    days.forEach(function(day) {
+      if (day == 'Su') {
+        formattedDays.push('SU');
+      }
+      if (day == 'M') {
+        formattedDays.push('MO');
+      }
+      if (day == 'T') {
+        formattedDays.push('TU');
+      }
+      if (day == 'W') {
+        formattedDays.push('WE');
+      }
+      if (day == 'Th') {
+        formattedDays.push('TH');
+      }
+      if (day == 'F') {
+        formattedDays.push('FR');
+      }
+      if (day == 'S' || day == 'Sa') {
+        formattedDays.push('SA');
+      }
+    });
+
+    return formattedDays.join(',');
+  };
+
+  var getStartEndDate = function(term) {
+    // todo: implement using important dates api when it is out in mid-july
+    switch (term) {
+      case 1169: // Fall 2016
+        return '2016-09-08 - 2016-12-05';
+      case 1171: // Winter 2017
+        return '2017-01-03 - 2017-04-03';
+      case 1175: // Spring 2017
+        return '2017-05-01 - 2017-07-25';
+    }
+    return null;
+  };
+
+  var addSection = function(section) {
+    if (sections_count === undefined) {
+      console.log('[WatCal] Initialize the calendar first.');
+      return;
+    }
+
+    var courseCode = section.subject + ' ' + section.catalog_number;
+    var section_string = section.section.split(' ');
+    var component = section_string[0];
+    if (component == 'TST') {
+      return; // skip this one
+    }
+
+    section.classes.forEach(function(klass) {
+      var room = klass.location == undefined ? 'TBA' : klass.location.building + ' ' + klass.location.room;
+      var daysOfWeek = _getDaysOfWeek(klass.date.weekdays);
+      var instructor = klass.instructors.length == 0 ? 'TBA' : klass.instructors[0].replace(/([a-zA-Z]+),([a-zA-Z]+)/, '$2 $1');
+
+      var startEndDate = getStartEndDate(section.term); // YYYY-MM-DD
+      if (getStartEndDate == null) { // cannot find start/end date
+        event.trigger('error', ['StartEndDate not found.']);
+        return;
+      }
+
+      // Start the event one day before the actual start date, then exclude it in an exception date
+      // rule. This ensures an event does not occur on startDate if startDate is not on part of daysOfWeek.
+      var start_time = klass.date.start_time.split(':');
+      var startDate = moment(startEndDate.substring(0, 10), 'YYYY-MM-DD').subtract(1, 'day');
+
+      // End the event one day after the actual end date. Technically, the RRULE UNTIL field should
+      // be the start time of the last occurrence of an event. However, since the field does not
+      // accept a timezone (only UTC time) and Toronto is always behind UTC, we can just set the
+      // end date one day after and be guaranteed that no other occurrence of this event.
+      var end_time = klass.date.end_time.split(':');
+      var endDate = moment(startEndDate.substring(13, 23), 'YYYY-MM-DD').add(1, 'day');
+
+      // DTSTAMP doesn't matter
+      var iCalContent =
+        'BEGIN:VEVENT\r\n' +
+        'DTSTART;TZID=' + timezone + ':' + startDate.set({ 'hour': start_time[0], 'minute': start_time[1] }).format('YYYYMMDDTHHmmss') + '\r\n' +
+        'DTEND;TZID=' + timezone + ':' + startDate.set({ 'hour': end_time[0], 'minute': end_time[1] }).format('YYYYMMDDTHHmmss') + '\r\n' +
+        'DTSTAMP:' + moment(new Date().toISOString()).format('YYYYMMDDTHHmmss') + '\r\n' +
+        'LOCATION:' + room + '\r\n' +
+        'RRULE:FREQ=WEEKLY;UNTIL=' + endDate.set({ 'hour': end_time[0], 'minute': end_time[1] }).format('YYYYMMDDTHHmmss') + 'Z;BYDAY=' + daysOfWeek + '\r\n' +
+        'EXDATE;TZID=' + timezone + ':' + startDate.set({ 'hour': start_time[0], 'minute': start_time[1] }).format('YYYYMMDDTHHmmss') + '\r\n' +
+        'SUMMARY:' + courseCode + ' (' + component + ') in ' + room + '\r\n' +
+        'DESCRIPTION:' +
+          'Course Title: ' + section.title + '\\n' +
+          'Section: ' + section_string[1] + '\\n' +
+          'Instructor: ' + instructor + '\\n' +
+          'Class Number: ' + section.class_number + '\\n' +
+          'Start/End Date: ' + startEndDate + '\\n\r\n' +
+        'UID:' + guid() + '\r\n' +
+        'END:VEVENT\r\n';
+
+      content += iCalContent;
+      event.trigger('count_section');
+    });
+  };
+
+  var addInvalidSection = function(course) {
+    if (sections_count === undefined) {
+      console.log('[WatCal] Initialize the calendar first.');
+      return;
+    }
+    console.log('Section ' + course['section'] + ' for ' + course['subject'] + '' + course['catalog_number'] + ' not found.');
+    event.trigger('count_section');
+  };
+
+  var _getContent = function() {
+    return (
+      'BEGIN:VCALENDAR\r\n' +
+      'VERSION:2.0\r\n' +
+      'PRODID:-//Jay Ching Lim/WatCal//EN\r\n' +
+      'BEGIN:VTIMEZONE\r\n' +
+      'TZID:America/Toronto\r\n' +
+      'X-LIC-LOCATION:America/Toronto\r\n' +
+      'BEGIN:DAYLIGHT\r\n' +
+      'TZOFFSETFROM:-0500\r\n' +
+      'TZOFFSETTO:-0400\r\n' +
+      'TZNAME:EDT\r\n' +
+      'DTSTART:19700308T020000\r\n' +
+      'RRULE:FREQ=YEARLY;BYMONTH=3;BYDAY=2SU\r\n' +
+      'END:DAYLIGHT\r\n' +
+      'BEGIN:STANDARD\r\n' +
+      'TZOFFSETFROM:-0400\r\n' +
+      'TZOFFSETTO:-0500\r\n' +
+      'TZNAME:EST\r\n' +
+      'DTSTART:19701101T020000\r\n' +
+      'RRULE:FREQ=YEARLY;BYMONTH=11;BYDAY=1SU\r\n' +
+      'END:STANDARD\r\n' +
+      'END:VTIMEZONE\r\n' +
+      content +
+      'END:VCALENDAR\r\n'
+    );
+  };
+
+  return {
+    init: init,
+    addSection: addSection
+  };
+}());
 
 function guid() {
   function s4() {
@@ -93,53 +253,24 @@ function guid() {
 }
 
 function getLocale() {
-  if (navigator.languages != undefined) {
-    return navigator.languages[0];
-  } else {
-    return navigator.language;
-  }
-}
-
-function toTitleCase(str) {
-  return str.replace(/_/g, ' ').replace(/\w\S*/g, function(txt){return txt.charAt(0).toUpperCase() + txt.substr(1).toLowerCase();});
+  return navigator.languages != undefined ? navigator.languages[0] : navigator.language
 }
 
 /**
  * Extracts course schedule info and creates a downloadable iCalendar (.ics) file.
  */
 var main = function() {
-  var iCalContentArray = [];
-
-  var iCalContent =
-    'BEGIN:VTIMEZONE\r\n' +
-    'TZID:America/Toronto\r\n' +
-    'X-LIC-LOCATION:America/Toronto\r\n' +
-    'BEGIN:DAYLIGHT\r\n' +
-    'TZOFFSETFROM:-0500\r\n' +
-    'TZOFFSETTO:-0400\r\n' +
-    'TZNAME:EDT\r\n' +
-    'DTSTART:19700308T020000\r\n' +
-    'RRULE:FREQ=YEARLY;BYMONTH=3;BYDAY=2SU\r\n' +
-    'END:DAYLIGHT\r\n' +
-    'BEGIN:STANDARD\r\n' +
-    'TZOFFSETFROM:-0400\r\n' +
-    'TZOFFSETTO:-0500\r\n' +
-    'TZNAME:EST\r\n' +
-    'DTSTART:19701101T020000\r\n' +
-    'RRULE:FREQ=YEARLY;BYMONTH=11;BYDAY=1SU\r\n' +
-    'END:STANDARD\r\n' +
-    'END:VTIMEZONE\r\n';
-  iCalContentArray.push(iCalContent);
-
-  var timezone = 'America/Toronto';
-  var numberOfEvents = 0;
+  $('#WAIT_win0').css({ 'visibility': 'visible', 'display': 'block' });
+  $('#UW_DERIVED_CEM2_DESCR_X2').append('<div id="DSCHEDULE"> <a href="#" style="color:rgb(74,89,140)">(Generating Schedule...)</a></div>');
+  $('#DSCHEDULE a').click(function(e) {
+    e.preventDefault();
+    alert('Please wait for a moment.');
+  });
 
   moment.locale(getLocale());
 
-  var courses = {};
-  // {
-  //   'math135': ['001', '109'];
-  // }
+  var courses_beta = {};
+  var count = 0;
 
   $('[id^=UW_PREENRL_L_VW_SUBJECT]').each(function() {
     var siblings = $(this).first().parent().parent().siblings();
@@ -148,130 +279,74 @@ var main = function() {
     var catalog_nbr = $(siblings).find('[id^=UW_PREENRL_L_VW_CATALOG_NBR]').text();
     var class_section = $(siblings).find('[id^=UW_PREENRL_L_VW_CLASS_SECTION]').text();
 
-    var course_name = subject.toLowerCase() + catalog_nbr;
-    if (courses[course_name] === undefined) {
-      courses[course_name] = [class_section];
+    if (subject === 'SEQ') { // skip co-op sequences
+      return;
+    }
+    count++;
+    var course_name = subject + '' + catalog_nbr;
+    if (courses_beta[course_name] === undefined) {
+      courses_beta[course_name] = [{
+        subject: subject,
+        catalog_number: catalog_nbr,
+        section: class_section
+      }];
     } else {
-      courses[course_name].push(class_section);
+      courses_beta[course_name].push({
+        subject: subject,
+        catalog_number: catalog_nbr,
+        section: class_section
+      });
     }
   });
 
-  // console.log(JSON.stringify(courses));
+  // console.log(courses_beta);
+  Calendar.init(count);
 
-  // override getJSON config
-  $.ajaxSetup({ async: false }); // bad, but it's ok
+  // Load courses
+  var load_courses = function(term, courses) {
+    // console.log('Loading courses...');
 
-  // TODO, only execute all of these when user clicks on download schedule
-  var json_data = {};
-  // load json and keep the data first
-  for (var subject in courses) {
-    // skip loop if the property is from prototype
-    if(!courses.hasOwnProperty(subject)) {
-      continue;
-    }
-    // skip co-op sequences too
-    if (subject.match(/^seq/)) {
-      continue;
-    }
-
-    $.getJSON( 'https://uwflow.com/api/v1/courses/' + subject + '/sections', function(data) {
-      if (data['sections'] == undefined) {
-        return;
-      }
-      // loop the section numbers
-      for (var j = 0; j < courses[subject].length; j++) {
-        // console.log('searching for ' + subject + ' : ' + courses[subject][j]);
-
-        // for each section_number, check if it exists in the json data
-        for (var i = 0; i < data['sections'].length; i++) {
-          if (courses[subject][j] == data['sections'][i]['section_num'] && data['sections'][i]['term_id'] == '2016_09') {
-            var sd = data['sections'][i];
-
-            for (var k = 0; k < sd['meetings'].length; k++) {
-              var meeting = sd['meetings'][k];
-
-              var startTime = toHHMM(meeting['start_seconds']);
-              var endTime = toHHMM(meeting['end_seconds']);
-              var room = meeting['room'] == 'null' ? 'TBA' : meeting['building'] + ' ' + meeting['room'];
-              var daysOfWeek = getDaysOfWeek(meeting['days']);
-              var courseCode = sd['course_id'].toUpperCase();
-              var component = sd['section_type'];
-              if (component == 'TST') {
-                continue; // skip this one
-              }
-              // var courseName
-              var section = sd['section_num']
-              var instructor = meeting['prof_id'] == null ? 'TBA' : toTitleCase(meeting['prof_id']);
-              var classNumber = sd['class_num'];
-              var startEndDate = '09/08/2016 - 12/05/2016'; //standard for fall 2016
-
-              // Start the event one day before the actual start date, then exclude it in an exception date
-              // rule. This ensures an event does not occur on startDate if startDate is not on part of daysOfWeek.
-              var startDate = moment(startEndDate.substring(0, 10), 'L').toDate();
-              startDate.setDate(startDate.getDate() - 1);
-
-              // End the event one day after the actual end date. Technically, the RRULE UNTIL field should
-              // be the start time of the last occurrence of an event. However, since the field does not
-              // accept a timezone (only UTC time) and Toronto is always behind UTC, we can just set the
-              // end date one day after and be guaranteed that no other occurrence of this event.
-              var endDate = moment(startEndDate.substring(13, 23), 'L').toDate();
-              endDate.setDate(endDate.getDate() + 1);
-
-              var currentDate = moment(new Date(new Date().getTime()).toLocaleDateString()).toDate();
-              var currentTime = new Date(new Date().getTime()).toLocaleTimeString().replace(/:\d+ /, '');
-
-              // DTSTAMP doesn't matter
-              var iCalContent =
-                'BEGIN:VEVENT\r\n' +
-                'DTSTART;TZID=' + timezone + ':' + getDateTimeString(startDate, startTime) + '\r\n' +
-                'DTEND;TZID=' + timezone + ':' + getDateTimeString(startDate, endTime) + '\r\n' +
-                'DTSTAMP:' + getDateTimeString(currentDate, currentTime) + '\r\n' +
-                'LOCATION:' + room + '\r\n' +
-                'RRULE:FREQ=WEEKLY;UNTIL=' + getDateTimeString(endDate, endTime) + 'Z;BYDAY=' + daysOfWeek + '\r\n' +
-                'EXDATE;TZID=' + timezone + ':' + getDateTimeString(startDate, startTime) + '\r\n' +
-                'SUMMARY:' + courseCode + ' (' + component + ') in ' + room + '\r\n' +
-                'DESCRIPTION:' +
-                  'Section: ' + section + '\\n' +
-                  'Instructor: ' + instructor + '\\n' +
-                  'Class Number: ' + classNumber + '\\n' +
-                  'Start/End Date: ' + startEndDate + '\\n\r\n' +
-                'UID:' + guid() + '\r\n' +
-                'END:VEVENT\r\n';
-
-              // console.log(iCalContent);
-
-              iCalContentArray.push(iCalContent);
-              numberOfEvents++;
-
+    $.each(courses, function(course_name, sections) {
+      OpenDataAPI.getCourseScheduleByTerm(term, sections[0].subject, sections[0].catalog_number, function(resp) {
+        sections.forEach(function(course) {
+          var section_found = false;
+          $.each(resp['data'], function(index, val) {
+            if (val.section.indexOf(course.section) > -1) {
+              Calendar.addSection(val);
+              section_found = true;
+              return;
             }
-            break;
+          });
+          if (!section_found) { // could not seem to find section
+            Calendar.addInvalidSection(course);
           }
-        }
+        });
+      });
+    });
+  };
+
+  // Search for term id
+  var term_string = $('#TERM_TBL_DESCR').text().split(' ');
+  OpenDataAPI.getTermsListings(function(resp) {
+    var term_id = 0;
+    $.each(resp['data']['listings'][term_string[1]], function(index, val) {
+      if (val['name'].indexOf(term_string[0]) > -1) {
+        term_id = val['id'];
       }
     });
-  }
-
-  // If no events were found, notify the user. Otherwise, proceed to download the ICS file.
-  if ($('#UW_DERIVED_CEM2_DESCR_X2').text().indexOf('Download') < 0) {
-    if (numberOfEvents === 0) {
-      $('#UW_DERIVED_CEM2_DESCR_X2').append(' (<a href="#">Download Schedule</a>)').click(function() {
-        alert('Unable to create a schedule. No sections found.');
-        return false;
-      });
-    } else {
-      var studentName = $('#DERIVED_SSTSNAV_PERSON_NAME').text().toLowerCase();
-      studentName = studentName.replace(/\ /g, '-');  // Replace spaces with dashes
-      var fileName = studentName + '-uw-class-schedule.ics';
-
-      $('#UW_DERIVED_CEM2_DESCR_X2').append(
-        ' (<a href="data:text/calendar;charset=UTF-8,' +
-        encodeURIComponent(wrapICalContent(iCalContentArray.join(''))) +
-        '" download="' + fileName + '">Download Schedule</a>)'
-      );
+    if (term_id == 0) { // could not seem to find term id
+      var ENTER_TERM_STRING = '[WatCal] Could not identify term. Please visit http://www.adm.uwaterloo.ca/infocour/CIR/SA/under.html and enter the term id here. (e.g. 1169 for Fall 2016)';
+      term_id = prompt(ENTER_TERM_STRING);
+      if (isNaN(term_id)) {
+        term_id = prompt(ENTER_TERM_STRING);
+      }
     }
-  }
-
-  // console.log(iCalContentArray);
+    if (isNaN(term_id)) {
+      alert('[WatCal] Could not generate schedule.');
+    } else {
+      load_courses(term_id, courses_beta);
+    }
+  });
 };
 
 // Start checking after user selects a study term.
@@ -283,7 +358,6 @@ $(document).ready(function() {
       if (check !== null) {
         if (check.text() == 'Successful Course Enrollment') {
           main();
-          // console.log('found successful course enrollment');
         }
       }
     }
