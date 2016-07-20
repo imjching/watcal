@@ -4,6 +4,17 @@
 */
 'use strict';
 
+function guid() {
+  function s4() {
+    return Math.floor((1 + Math.random()) * 0x10000).toString(16).substring(1);
+  }
+  return s4() + '-' + s4() + '-' + s4() + '-' + s4();
+}
+
+function getLocale() {
+  return navigator.languages != undefined ? navigator.languages[0] : navigator.language
+}
+
 var OpenDataAPI = (function() {
   var API_KEY = '0344dcbf63c56d35fbac1ffd60ecf116';
   var API_BASE_URL = 'https://api.uwaterloo.ca/v2';
@@ -45,53 +56,105 @@ var OpenDataAPI = (function() {
     });
   };
 
-  // revealing module pattern
+  var getStartEndDate = function(term) {
+    // TODO:
+    // 1. Implement using important dates API
+    // 2. Change this to asynchronous
+    switch (term) {
+      case 1169: // Fall 2016
+        return '2016-09-08 - 2016-12-05';
+      case 1171: // Winter 2017
+        return '2017-01-03 - 2017-04-03';
+      case 1175: // Spring 2017
+        return '2017-05-01 - 2017-07-25';
+    }
+    return null;
+  };
+
   return {
     getTermsListings: getTermsListings,
-    getCourseScheduleByTerm: getCourseScheduleByTerm
+    getCourseScheduleByTerm: getCourseScheduleByTerm,
+    getStartEndDate: getStartEndDate
   };
 }());
 
-var Calendar = (function() {
-  var event = new EventEmitter();
-  var content = '';
-  var sections_count = undefined;
-  var current_count = 0;
-    var timezone = 'America/Toronto';
+var LoadingIcon = (function() {
+  var show = function() {
+    $('#WAIT_win0').css({ 'visibility': 'visible', 'display': 'block' });
+  };
 
-  var resetLinks = function() {
+  var hide = function() {
+    $('#WAIT_win0').css({ 'visibility': 'hidden', 'display': 'none' });
+  };
+
+  return {
+    show: show,
+    hide: hide
+  };
+}());
+
+var DownloadLink = (function() {
+  var reset = function() {
+    if ($('#DSCHEDULE') === null) { // first time
+      return;
+    }
     $('#DSCHEDULE a').unbind('click');
     $('#DSCHEDULE').remove();
-    $('#WAIT_win0').css({ 'visibility': 'hidden', 'display': 'none' });
   }
 
-  event.on('error', function(message) {
-    resetLinks();
-    $('#UW_DERIVED_CEM2_DESCR_X2').append('<div id="DSCHEDULE"> <a href="#" style="color:red">(Invalid Schedule)</a>)</div>');
-    $('#DSCHEDULE a').click(function(e) {
-      e.preventDefault();
-      alert('Unable to create a schedule. ' + message);
-    });
-  });
-
-  event.on('count_section', function() {
-    current_count++;
-    if (current_count == sections_count) { // everything is loaded, display download link
-      resetLinks();
+  var show = function(type, message) {
+    // everytime when we show, we reset
+    reset();
+    LoadingIcon.hide();
+    if (type === 'generating') {
+      LoadingIcon.show();
+      $('#UW_DERIVED_CEM2_DESCR_X2').append('<div id="DSCHEDULE"> <a href="#" style="color:rgb(74,89,140)">(Generating Schedule...)</a></div>');
+      $('#DSCHEDULE a').click(function(e) {
+        e.preventDefault();
+        alert('Please wait for a moment.');
+      });
+    } else if (type === 'error') {
+      $('#UW_DERIVED_CEM2_DESCR_X2').append('<div id="DSCHEDULE"> <a href="#" style="color:red">(Invalid Schedule)</a>)</div>');
+      $('#DSCHEDULE a').click(function(e) {
+        e.preventDefault();
+        alert('Unable to create a schedule. ' + message);
+      });
+    } else if (type === 'success') {
       var studentName = $('#DERIVED_SSTSNAV_PERSON_NAME').text().toLowerCase();
       studentName = studentName.replace(/\ /g, '-');  // Replace spaces with dashes
       var fileName = studentName + '-uw-class-schedule.ics';
 
       $('#UW_DERIVED_CEM2_DESCR_X2').append(
-        ' <a href="data:text/calendar;charset=UTF-8,' + encodeURIComponent(_getContent()) + '" download="' + fileName + '" style="color:#ab5b1a">(Download Schedule)</a>'
+        ' <a href="data:text/calendar;charset=UTF-8,' + encodeURIComponent(message) + '" download="' + fileName + '" style="color:#ab5b1a">(Download Schedule)</a>'
       );
+    }
+  }
+
+  return {
+    show: show,
+    reset: reset
+  };
+}());
+
+var Calendar = (function() {
+  var TIMEZONE = 'America/Toronto';
+  var event = new EventEmitter();
+
+  var content = '';
+  var sections_count = undefined;
+  var current_count = 0;
+
+  event.on('count_section', function() {
+    current_count++;
+    if (current_count == sections_count) { // everything is loaded, display download link
+      DownloadLink.show('success', _getContent());
     }
   });
 
   var init = function(count) {
     sections_count = count;
     if (sections_count == 0) {
-      event.trigger('error', ['No sections found.']);
+      DownloadLink.show('error', 'No sections found.');
     }
   };
 
@@ -127,22 +190,9 @@ var Calendar = (function() {
     return formattedDays.join(',');
   };
 
-  var getStartEndDate = function(term) {
-    // todo: implement using important dates api when it is out in mid-july
-    switch (term) {
-      case 1169: // Fall 2016
-        return '2016-09-08 - 2016-12-05';
-      case 1171: // Winter 2017
-        return '2017-01-03 - 2017-04-03';
-      case 1175: // Spring 2017
-        return '2017-05-01 - 2017-07-25';
-    }
-    return null;
-  };
-
   var addSection = function(section) {
     if (sections_count === undefined) {
-      console.log('[WatCal] Initialize the calendar first.');
+      // console.log('[WatCal] Initialize the calendar first.');
       return;
     }
 
@@ -158,9 +208,9 @@ var Calendar = (function() {
       var daysOfWeek = _getDaysOfWeek(klass.date.weekdays);
       var instructor = klass.instructors.length == 0 ? 'TBA' : klass.instructors[0].replace(/([a-zA-Z]+),([a-zA-Z]+)/, '$2 $1');
 
-      var startEndDate = getStartEndDate(section.term); // YYYY-MM-DD
-      if (getStartEndDate == null) { // cannot find start/end date
-        event.trigger('error', ['StartEndDate not found.']);
+      var startEndDate = OpenDataAPI.getStartEndDate(section.term); // YYYY-MM-DD
+      if (startEndDate == null) { // cannot find start/end date
+        DownloadLink.show('error', 'StartEndDate not found.');
         return;
       }
 
@@ -179,12 +229,12 @@ var Calendar = (function() {
       // DTSTAMP doesn't matter
       var iCalContent =
         'BEGIN:VEVENT\r\n' +
-        'DTSTART;TZID=' + timezone + ':' + startDate.set({ 'hour': start_time[0], 'minute': start_time[1] }).format('YYYYMMDDTHHmmss') + '\r\n' +
-        'DTEND;TZID=' + timezone + ':' + startDate.set({ 'hour': end_time[0], 'minute': end_time[1] }).format('YYYYMMDDTHHmmss') + '\r\n' +
+        'DTSTART;TZID=' + TIMEZONE + ':' + startDate.set({ 'hour': start_time[0], 'minute': start_time[1] }).format('YYYYMMDDTHHmmss') + '\r\n' +
+        'DTEND;TZID=' + TIMEZONE + ':' + startDate.set({ 'hour': end_time[0], 'minute': end_time[1] }).format('YYYYMMDDTHHmmss') + '\r\n' +
         'DTSTAMP:' + moment(new Date().toISOString()).format('YYYYMMDDTHHmmss') + '\r\n' +
         'LOCATION:' + room + '\r\n' +
         'RRULE:FREQ=WEEKLY;UNTIL=' + endDate.set({ 'hour': end_time[0], 'minute': end_time[1] }).format('YYYYMMDDTHHmmss') + 'Z;BYDAY=' + daysOfWeek + '\r\n' +
-        'EXDATE;TZID=' + timezone + ':' + startDate.set({ 'hour': start_time[0], 'minute': start_time[1] }).format('YYYYMMDDTHHmmss') + '\r\n' +
+        'EXDATE;TZID=' + TIMEZONE + ':' + startDate.set({ 'hour': start_time[0], 'minute': start_time[1] }).format('YYYYMMDDTHHmmss') + '\r\n' +
         'SUMMARY:' + courseCode + ' (' + component + ') in ' + room + '\r\n' +
         'DESCRIPTION:' +
           'Course Title: ' + section.title + '\\n' +
@@ -202,10 +252,10 @@ var Calendar = (function() {
 
   var addInvalidSection = function(course) {
     if (sections_count === undefined) {
-      console.log('[WatCal] Initialize the calendar first.');
+      // console.log('[WatCal] Initialize the calendar first.');
       return;
     }
-    console.log('Section ' + course['section'] + ' for ' + course['subject'] + '' + course['catalog_number'] + ' not found.');
+    // console.log('Section ' + course['section'] + ' for ' + course['subject'] + '' + course['catalog_number'] + ' not found.');
     event.trigger('count_section');
   };
 
@@ -239,39 +289,18 @@ var Calendar = (function() {
 
   return {
     init: init,
-    addSection: addSection
+    addSection: addSection,
+    addInvalidSection: addInvalidSection
   };
 }());
 
-function guid() {
-  function s4() {
-    return Math.floor((1 + Math.random()) * 0x10000)
-      .toString(16)
-      .substring(1);
-  }
-  return s4() + '-' + s4() + '-' + s4() + '-' + s4();
-}
-
-function getLocale() {
-  return navigator.languages != undefined ? navigator.languages[0] : navigator.language
-}
-
-/**
- * Extracts course schedule info and creates a downloadable iCalendar (.ics) file.
- */
-var main = function() {
-  $('#WAIT_win0').css({ 'visibility': 'visible', 'display': 'block' });
-  $('#UW_DERIVED_CEM2_DESCR_X2').append('<div id="DSCHEDULE"> <a href="#" style="color:rgb(74,89,140)">(Generating Schedule...)</a></div>');
-  $('#DSCHEDULE a').click(function(e) {
-    e.preventDefault();
-    alert('Please wait for a moment.');
-  });
-
+function main() {
   moment.locale(getLocale());
-
-  var courses_beta = {};
+  DownloadLink.show('generating');
+  var courses = {};
   var count = 0;
 
+  // search all the courses/sections
   $('[id^=UW_PREENRL_L_VW_SUBJECT]').each(function() {
     var siblings = $(this).first().parent().parent().siblings();
 
@@ -284,48 +313,22 @@ var main = function() {
     }
     count++;
     var course_name = subject + '' + catalog_nbr;
-    if (courses_beta[course_name] === undefined) {
-      courses_beta[course_name] = [{
-        subject: subject,
-        catalog_number: catalog_nbr,
-        section: class_section
-      }];
+    var course = {
+      subject: subject,
+      catalog_number: catalog_nbr,
+      section: class_section
+    };
+    if (courses[course_name] === undefined) {
+      courses[course_name] = [course];
     } else {
-      courses_beta[course_name].push({
-        subject: subject,
-        catalog_number: catalog_nbr,
-        section: class_section
-      });
+      courses[course_name].push(course);
     }
   });
 
-  // console.log(courses_beta);
+  // initialize calendar with total number of sections
   Calendar.init(count);
 
-  // Load courses
-  var load_courses = function(term, courses) {
-    // console.log('Loading courses...');
-
-    $.each(courses, function(course_name, sections) {
-      OpenDataAPI.getCourseScheduleByTerm(term, sections[0].subject, sections[0].catalog_number, function(resp) {
-        sections.forEach(function(course) {
-          var section_found = false;
-          $.each(resp['data'], function(index, val) {
-            if (val.section.indexOf(course.section) > -1) {
-              Calendar.addSection(val);
-              section_found = true;
-              return;
-            }
-          });
-          if (!section_found) { // could not seem to find section
-            Calendar.addInvalidSection(course);
-          }
-        });
-      });
-    });
-  };
-
-  // Search for term id
+  // search for term id
   var term_string = $('#TERM_TBL_DESCR').text().split(' ');
   OpenDataAPI.getTermsListings(function(resp) {
     var term_id = 0;
@@ -342,16 +345,33 @@ var main = function() {
       }
     }
     if (isNaN(term_id)) {
-      alert('[WatCal] Could not generate schedule.');
-    } else {
-      load_courses(term_id, courses_beta);
+      DownloadLink.show('error', 'Could not identify term.');
+      return;
     }
+
+    // search for courses
+    $.each(courses, function(course_name, sections) {
+      OpenDataAPI.getCourseScheduleByTerm(term_id, sections[0].subject, sections[0].catalog_number, function(resp) {
+        sections.forEach(function(course) {
+          var section_found = false;
+          $.each(resp['data'], function(index, val) {
+            if (val.section.indexOf(course.section) > -1) {
+              Calendar.addSection(val);
+              section_found = true;
+              return;
+            }
+          });
+          if (!section_found) { // could not seem to find section
+            Calendar.addInvalidSection(course);
+          }
+        });
+      });
+    });
   });
 };
 
 // Start checking after user selects a study term.
 $(document).ready(function() {
-  // Execute main function only when user is in the Enroll/my_class_schedule tab.
   $('.SSSTABACTIVE').each(function() {
     if ($(this).text() === 'view my class enrollment results') {
       var check = $('#UW_DERIVED_CEM2_DESCR_X2');
