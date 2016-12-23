@@ -199,9 +199,9 @@ var Calendar = (function() {
     var courseCode = section.subject + ' ' + section.catalog_number;
     var section_string = section.section.split(' ');
     var component = section_string[0];
-    if (component == 'TST') {
-      return; // skip this one
-    }
+    //if (component == 'TST') {
+    //  return; // skip this one
+    //}
 
     section.classes.forEach(function(klass) {
       var room = klass.location == undefined ? 'TBA' : klass.location.building + ' ' + klass.location.room;
@@ -212,6 +212,20 @@ var Calendar = (function() {
       if (startEndDate == null) { // cannot find start/end date
         DownloadLink.show('error', 'StartEndDate not found.');
         return;
+      }
+
+      // for tests
+      // start_date and end_date are not null
+      if (klass.date.start_date !== null && klass.date.end_date !== null) {
+        var year = parseInt((section.term / 10) % 100);
+
+        var split_start = klass.date.start_date.split("/");
+        var start_date = "20" + year + "-" + split_start[0] + "-" + split_start[1];
+
+        var split_end = klass.date.end_date.split("/");
+        var end_date = "20" + year + "-" + split_end[0] + "-" + split_end[1];
+
+        startEndDate = start_date + " - " + end_date;
       }
 
       // Start the event one day before the actual start date, then exclude it in an exception date
@@ -308,7 +322,8 @@ function main() {
     var catalog_nbr = $(siblings).find('[id^=UW_PREENRL_L_VW_CATALOG_NBR]').text();
     var class_section = $(siblings).find('[id^=UW_PREENRL_L_VW_CLASS_SECTION]').text();
 
-    if (subject === 'SEQ') { // skip co-op sequences
+    if (subject === 'SEQ' || subject === 'PD'/* || /^2/i.test(class_section)*/) {
+      // skip co-op sequences, PD, and TST
       return;
     }
     count++;
