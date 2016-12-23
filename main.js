@@ -204,7 +204,10 @@ var Calendar = (function() {
     //}
 
     section.classes.forEach(function(klass) {
-      var room = klass.location == undefined ? 'TBA' : klass.location.building + ' ' + klass.location.room;
+      var room = 'TBA';
+      if (klass.location != undefined && klass.location.building != undefined) {
+        room = klass.location.building + ' ' + klass.location.room;
+      }
       var daysOfWeek = _getDaysOfWeek(klass.date.weekdays);
       var instructor = klass.instructors.length == 0 ? 'TBA' : klass.instructors[0].replace(/([a-zA-Z]+),([a-zA-Z]+)/, '$2 $1');
 
